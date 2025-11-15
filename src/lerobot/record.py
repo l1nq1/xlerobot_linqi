@@ -78,7 +78,6 @@ python -m lerobot.record \
   --dataset.single_task="Grab and handover the red cube to the other arm"
 ```
 """
-
 import logging
 import time
 from dataclasses import asdict, dataclass
@@ -173,8 +172,9 @@ class DatasetRecordConfig:
     # Not enough threads might cause low camera fps.
     num_image_writer_threads_per_camera: int = 4
     # Number of episodes to record before batch encoding videos
-    # Set to 1 for immediate encoding (default behavior), or higher for batched encoding
-    video_encoding_batch_size: int = 1
+    # Set to 1 for immediate encoding, or higher for batched encoding
+    # Set to a very large number (e.g., 100000) to encode all videos only after recording completes
+    video_encoding_batch_size: int = 100000
 
     def __post_init__(self):
         if self.single_task is None:
@@ -324,6 +324,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
     dataset_features = {**action_features, **obs_features}
 
+
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.dataset.repo_id,
@@ -404,6 +405,10 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             recorded_episodes += 1
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
+
+    # Verify dataset integrity after all episodes are recorded
+    # This was moved from save_episode() to avoid blocking during recording
+    dataset.verify_dataset_integrity()
 
     robot.disconnect()
     if teleop is not None:

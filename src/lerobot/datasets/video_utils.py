@@ -28,6 +28,8 @@ import torch
 import torchvision
 from datasets.features.features import register_feature
 from PIL import Image
+import os
+import stat
 
 
 def get_safe_default_codec():
@@ -488,6 +490,8 @@ class VideoEncodingManager:
                 f"from episode {start_ep} to {end_ep - 1}"
             )
             self.dataset.batch_encode_videos(start_ep, end_ep)
+            # Reset counter after encoding all remaining episodes
+            self.dataset.episodes_since_last_encoding = 0
 
         # Clean up episode images if recording was interrupted
         if exc_type is not None:
@@ -500,7 +504,8 @@ class VideoEncodingManager:
                     logging.debug(
                         f"Cleaning up interrupted episode images for episode {interrupted_episode_index}, camera {key}"
                     )
-                    shutil.rmtree(img_dir)
+                    # safe_rmtree(img_dir)
+                    shutil.rmtree(img_dir, ignore_errors=True)
 
         # Clean up any remaining images directory if it's empty
         img_dir = self.dataset.root / "images"
@@ -509,9 +514,50 @@ class VideoEncodingManager:
         if len(png_files) == 0:
             # Only remove the images directory if no PNG files remain
             if img_dir.exists():
-                shutil.rmtree(img_dir)
+                # safe_rmtree(img_dir)
+                shutil.rmtree(img_dir, ignore_errors=True)
                 logging.debug("Cleaned up empty images directory")
         else:
             logging.debug(f"Images directory is not empty, containing {len(png_files)} PNG files")
 
         return False  # Don't suppress the original exception
+
+
+def safe_rmtree(path):
+    """
+    Robust directory removal:
+    - If shutil.rmtree fails, try manual cleanup with permission fixes.
+    - Silently logs failures but tries best-effort to remove files/dirs.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except Exception as e:
+        logging.debug(f"shutil.rmtree failed for {path}: {e}, attempting manual cleanup")
+
+    # Walk bottom-up to remove files and directories
+    for child in sorted(path.rglob("*"), key=lambda p: -len(str(p))):
+        try:
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            else:
+                child.rmdir()
+        except Exception:
+            try:
+                os.chmod(child, stat.S_IWUSR | stat.S_IRUSR)
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                else:
+                    child.rmdir()
+            except Exception as e2:
+                logging.debug(f"Failed to remove {child}: {e2}")
+
+    # Finally try to remove the root dir
+    try:
+        path.rmdir()
+    except Exception as e:
+        logging.debug(f"Failed to remove directory {path}: {e}")
+
