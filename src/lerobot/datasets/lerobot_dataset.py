@@ -75,7 +75,43 @@ from lerobot.datasets.video_utils import (
 
 CODEBASE_VERSION = "v2.1"
 
+def safe_rmtree(path):
+    """
+    Robust directory removal:
+    - If shutil.rmtree fails, try manual cleanup with permission fixes.
+    - Silently logs failures but tries best-effort to remove files/dirs.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except Exception as e:
+        logging.debug(f"shutil.rmtree failed for {path}: {e}, attempting manual cleanup")
 
+    # Walk bottom-up to remove files and directories
+    for child in sorted(path.rglob("*"), key=lambda p: -len(str(p))):
+        try:
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            else:
+                child.rmdir()
+        except Exception:
+            try:
+                os.chmod(child, stat.S_IWUSR | stat.S_IRUSR)
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                else:
+                    child.rmdir()
+            except Exception as e2:
+                logging.debug(f"Failed to remove {child}: {e2}")
+
+    # Finally try to remove the root dir
+    try:
+        path.rmdir()
+    except Exception as e:
+        logging.debug(f"Failed to remove directory {path}: {e}")
 class LeRobotDatasetMetadata:
     def __init__(
         self,
@@ -816,16 +852,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         Video encoding is handled automatically based on batch_encoding_size:
         - If batch_encoding_size == 1: Videos are encoded immediately after each episode
-        - If batch_encoding_size > 1: Videos are encoded in batches.
+        - If batch_encoding_size > 1: Videos are encoded in batches. When batch_encoding_size is set to
+          a very large number (e.g., 100000), all videos will be encoded only after all episodes are
+          recorded, via the VideoEncodingManager context manager.
 
         Args:
             episode_data (dict | None, optional): Dict containing the episode data to save. If None, this will
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
                 None.
         """
-        if not episode_data:
-            episode_buffer = self.episode_buffer
-
+  #      if not episode_data:
+ #           episode_buffer = self.episode_buffer
+        episode_buffer=episode_data if episode_data is not None else self.episode_buffer
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
 
         # size and task are special cases that won't be added to hf_dataset
@@ -889,16 +927,35 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.tolerance_s,
         )
 
-        # Verify that we have one parquet file per episode and the number of video files matches the number of encoded episodes
-        parquet_files = list(self.root.rglob("*.parquet"))
-        assert len(parquet_files) == self.num_episodes
-        video_files = list(self.root.rglob("*.mp4"))
-        assert len(video_files) == (self.num_episodes - self.episodes_since_last_encoding) * len(
-            self.meta.video_keys
-        )
+        # Note: File system verification (parquet and video file counts) is moved to
+        # verify_dataset_integrity() method to avoid blocking during recording.
+        # Call verify_dataset_integrity() after all episodes are recorded for validation.
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
+
+    def verify_dataset_integrity(self) -> None:
+        """
+        Verify dataset integrity by checking parquet and video file counts.
+        This is called after all episodes are recorded to avoid blocking during recording.
+        """
+        # Verify that we have one parquet file per episode
+        parquet_files = list(self.root.rglob("*.parquet"))
+        assert len(parquet_files) == self.num_episodes, (
+            f"Expected {self.num_episodes} parquet files, found {len(parquet_files)}"
+        )
+        
+        # Verify video file count matches the number of encoded episodes
+        # After VideoEncodingManager.__exit__, all episodes should be encoded
+        if len(self.meta.video_keys) > 0:
+            video_files = list(self.root.rglob("*.mp4"))
+            # All episodes should be encoded at this point (episodes_since_last_encoding should be 0)
+            expected_video_count = self.num_episodes * len(self.meta.video_keys)
+            assert len(video_files) == expected_video_count, (
+                f"Expected {expected_video_count} video files (for {self.num_episodes} episodes), "
+                f"found {len(video_files)}. "
+                f"Episodes since last encoding: {self.episodes_since_last_encoding}"
+            )
 
     def _save_episode_table(self, episode_buffer: dict, episode_index: int) -> None:
         episode_dict = {key: episode_buffer[key] for key in self.hf_features}
@@ -910,15 +967,31 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_data_path.parent.mkdir(parents=True, exist_ok=True)
         ep_dataset.to_parquet(ep_data_path)
 
-    def clear_episode_buffer(self) -> None:
-        episode_index = self.episode_buffer["episode_index"]
+    # def clear_episode_buffer(self) -> None:
+    #     episode_index = self.episode_buffer["episode_index"]
 
+    #     # Clean up image files for the current episode buffer
+    #     if self.image_writer is not None:
+    #         for cam_key in self.meta.camera_keys:
+    #             img_dir = self._get_image_file_path(
+    #                 episode_index=episode_index, image_key=cam_key, frame_index=0
+    #             ).parent
+    #             if img_dir.is_dir():
+    #                 shutil.rmtree(img_dir)
+
+    #     # Reset the buffer
+    #     self.episode_buffer = self.create_episode_buffer()
+    def clear_episode_buffer(self, delete_images: bool = True) -> None:
         # Clean up image files for the current episode buffer
-        if self.image_writer is not None:
+        if delete_images:
+            # Wait for the async image writer to finish
+            if self.image_writer is not None:
+                self._wait_image_writer()
+            episode_index = self.episode_buffer["episode_index"]
+            if isinstance(episode_index, np.ndarray):
+                episode_index = episode_index.item() if episode_index.size == 1 else episode_index[0]
             for cam_key in self.meta.camera_keys:
-                img_dir = self._get_image_file_path(
-                    episode_index=episode_index, image_key=cam_key, frame_index=0
-                ).parent
+                img_dir = self._get_image_file_path(episode_index, cam_key, frame_index=0).parent
                 if img_dir.is_dir():
                     shutil.rmtree(img_dir)
 
@@ -973,7 +1046,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
             encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
-            shutil.rmtree(img_dir)
+            #shutil.rmtree(img_dir)
+                                # shutil.rmtree(img_dir)
+            safe_rmtree(img_dir)
 
         # Update video info (only needed when first episode is encoded since it reads from episode 0)
         if len(self.meta.video_keys) > 0 and episode_index == 0:
@@ -997,6 +1072,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
         for ep_idx in range(start_episode, end_episode):
             logging.info(f"Encoding videos for episode {ep_idx}")
             self.encode_episode_videos(ep_idx)
+
+        # Update video info if episode 0 was in the encoding range
+        # This ensures video info is always up to date after batch encoding
+        if len(self.meta.video_keys) > 0 and start_episode == 0:
+            self.meta.update_video_info()
+            write_info(self.meta.info, self.meta.root)
 
         logging.info("Batch video encoding completed")
 
@@ -1232,3 +1313,4 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
             f"  Transformations: {self.image_transforms},\n"
             f")"
         )
+
