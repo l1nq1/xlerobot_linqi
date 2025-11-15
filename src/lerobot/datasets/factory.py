@@ -87,13 +87,17 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
     # Handle case where repo_id might be a string representation of a list (from CLI parsing)
     repo_id = cfg.dataset.repo_id
-    if isinstance(repo_id, str) and repo_id.startswith('[') and repo_id.endswith(']'):
-        # Try to parse string representation of list
-        try:
-            repo_id = ast.literal_eval(repo_id)
-            logging.info(f"Parsed repo_id string to list: {repo_id}")
-        except (ValueError, SyntaxError):
-            logging.warning(f"Failed to parse repo_id as list, treating as single dataset: {repo_id}")
+    if isinstance(repo_id, str):
+        # Check if it looks like a string representation of a list
+        stripped = repo_id.strip()
+        if (stripped.startswith('[') and stripped.endswith(']')) or (stripped.startswith("['") or stripped.startswith('["')):
+            # Try to parse string representation of list
+            try:
+                repo_id = ast.literal_eval(repo_id)
+                logging.info(f"Parsed repo_id string to list: {repo_id}")
+            except (ValueError, SyntaxError) as e:
+                logging.warning(f"Failed to parse repo_id as list: {repo_id}, error: {e}")
+                # If parsing fails, it will be treated as a single dataset string below
     
     if isinstance(repo_id, str):
         ds_meta = LeRobotDatasetMetadata(

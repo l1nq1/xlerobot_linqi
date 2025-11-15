@@ -4,10 +4,10 @@
 dataset:
   # 本地数据集列表
   repo_id:
-    - pickup_circle_50episodes_single_arm_1107
-    - pickup_circle_20episodes_single_arm_1107_2
+    - fold_the_towel_10
+    - fold_the_towel_50
   # 本地数据集的根目录（每个数据集应该在 root/dataset_name/ 下）
-  root: /home1/linqi/test_dataset
+  root: /data/home/lixinyi/linqi/dataset
   episodes: null
   image_transforms:
     enable: false
@@ -19,20 +19,20 @@ policy:
   type: smolvla
   device: cuda
   push_to_hub: false
-  chunk_size: 50
-  n_action_steps: 50
+  chunk_size: 100
+  n_action_steps: 100
   n_obs_steps: 1
   freeze_vision_encoder: true
   train_expert_only: true
 
-job_name: my_smolvla_training_multi_dataset
-output_dir: tests/outputs/smolvla_multi_dataset_training
+job_name: smolvla_fold_the_towel_multi_dataset
+output_dir: /data/home/lixinyi/linqi/model/smolvla_fold_the_towel_multi_dataset
 batch_size: 2
 num_workers: 4
 steps: 100000
 save_freq: 5000
 save_checkpoint: true
-log_freq: 200
+log_freq: 10
 eval_freq: 20000
 
 wandb:
