@@ -53,11 +53,11 @@ class TrainPipelineConfig(HubMixin):
     num_workers: int = 4
     batch_size: int = 8
     steps: int = 100_000
-    eval_freq: int = 20_000
-    log_freq: int = 200
+    eval_freq: int = 20000
+    log_freq: int = 100
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
-    save_freq: int = 20_000
+    save_freq: int = 2000
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
@@ -70,6 +70,7 @@ class TrainPipelineConfig(HubMixin):
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
         policy_path = parser.get_path_arg("policy")
+
         if policy_path:
             # Only load the policy config
             cli_overrides = parser.get_cli_overrides("policy")
@@ -106,9 +107,6 @@ class TrainPipelineConfig(HubMixin):
             now = dt.datetime.now()
             train_dir = f"{now:%Y-%m-%d}/{now:%H-%M-%S}_{self.job_name}"
             self.output_dir = Path("outputs/train") / train_dir
-
-        if isinstance(self.dataset.repo_id, list):
-            raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")

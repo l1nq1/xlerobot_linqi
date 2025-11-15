@@ -15,9 +15,7 @@
 # limitations under the License.
 import contextlib
 import logging
-import os
 import shutil
-import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -634,15 +632,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def load_hf_dataset(self) -> datasets.Dataset:
         """hf_dataset contains all the observations, states, actions, rewards, etc."""
-        # Explicitly specify features to avoid auto-inference issues with deprecated 'List' type
-        # from older parquet files. This ensures compatibility with newer datasets library versions.
-        features = get_hf_features_from_features(self.features)
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train", features=features)
+            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
         else:
             files = [str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes]
-            hf_dataset = load_dataset("parquet", data_files=files, split="train", features=features)
+            hf_dataset = load_dataset("parquet", data_files=files, split="train")
 
         # TODO(aliberts): hf_dataset.set_format("torch")
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -1174,6 +1169,42 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
         # per robot.
         self.stats = aggregate_stats([dataset.meta.stats for dataset in self._datasets])
 
+    @property
+    def meta(self):
+        """Return a meta-like object for API consistency with LeRobotDataset.
+        
+        This object provides access to camera_keys and stats through the same interface
+        as LeRobotDataset.meta for consistency in factory code.
+        """
+        class MetaWrapper:
+            def __init__(self, parent):
+                self.parent = parent
+            
+            @property
+            def camera_keys(self):
+                return self.parent.camera_keys
+            
+            @property
+            def stats(self):
+                return self.parent.stats
+            
+            @property
+            def info(self):
+                # Return info from first dataset as representative
+                return self.parent._datasets[0].meta.info
+            
+            @property
+            def fps(self):
+                return self.parent.fps
+            
+            @property
+            def features(self):
+                # Return features from first dataset as representative
+                # All datasets should have compatible features
+                return self.parent._datasets[0].meta.features
+            
+        return MetaWrapper(self)
+    
     @property
     def repo_id_to_index(self):
         """Return a mapping from dataset repo_id to a dataset index automatically created by this class.
