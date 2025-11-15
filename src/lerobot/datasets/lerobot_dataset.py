@@ -15,7 +15,9 @@
 # limitations under the License.
 import contextlib
 import logging
+import os
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -75,7 +77,43 @@ from lerobot.datasets.video_utils import (
 
 CODEBASE_VERSION = "v2.1"
 
+def safe_rmtree(path):
+    """
+    Robust directory removal:
+    - If shutil.rmtree fails, try manual cleanup with permission fixes.
+    - Silently logs failures but tries best-effort to remove files/dirs.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except Exception as e:
+        logging.debug(f"shutil.rmtree failed for {path}: {e}, attempting manual cleanup")
 
+    # Walk bottom-up to remove files and directories
+    for child in sorted(path.rglob("*"), key=lambda p: -len(str(p))):
+        try:
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            else:
+                child.rmdir()
+        except Exception:
+            try:
+                os.chmod(child, stat.S_IWUSR | stat.S_IRUSR)
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                else:
+                    child.rmdir()
+            except Exception as e2:
+                logging.debug(f"Failed to remove {child}: {e2}")
+
+    # Finally try to remove the root dir
+    try:
+        path.rmdir()
+    except Exception as e:
+        logging.debug(f"Failed to remove directory {path}: {e}")
 class LeRobotDatasetMetadata:
     def __init__(
         self,
@@ -596,12 +634,15 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def load_hf_dataset(self) -> datasets.Dataset:
         """hf_dataset contains all the observations, states, actions, rewards, etc."""
+        # Explicitly specify features to avoid auto-inference issues with deprecated 'List' type
+        # from older parquet files. This ensures compatibility with newer datasets library versions.
+        features = get_hf_features_from_features(self.features)
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            hf_dataset = load_dataset("parquet", data_dir=path, split="train", features=features)
         else:
             files = [str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes]
-            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            hf_dataset = load_dataset("parquet", data_files=files, split="train", features=features)
 
         # TODO(aliberts): hf_dataset.set_format("torch")
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -823,8 +864,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
                 None.
         """
-        if not episode_data:
-            episode_buffer = self.episode_buffer
+        # if not episode_data:
+        #     episode_buffer = self.episode_buffer
+        episode_buffer = episode_data if episode_data is not None else self.episode_buffer
 
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
 
@@ -924,6 +966,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # Reset the buffer
         self.episode_buffer = self.create_episode_buffer()
+    # def clear_episode_buffer(self, delete_images: bool = True) -> None:
+    #     # Clean up image files for the current episode buffer
+    #     if delete_images:
+    #         # Wait for the async image writer to finish
+    #         if self.image_writer is not None:
+    #             self._wait_image_writer()
+    #         episode_index = self.episode_buffer["episode_index"]
+    #         if isinstance(episode_index, np.ndarray):
+    #             episode_index = episode_index.item() if episode_index.size == 1 else episode_index[0]
+    #         for cam_key in self.meta.camera_keys:
+    #             img_dir = self._get_image_file_dir(episode_index, cam_key)
+    #             if img_dir.is_dir():
+    #                 shutil.rmtree(img_dir)
+
+    #     # Reset the buffer
+    #     self.episode_buffer = self.create_episode_buffer()
 
     def start_image_writer(self, num_processes: int = 0, num_threads: int = 4) -> None:
         if isinstance(self.image_writer, AsyncImageWriter):
@@ -973,7 +1031,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
             encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
-            shutil.rmtree(img_dir)
+            #shutil.rmtree(img_dir)
+                                # shutil.rmtree(img_dir)
+            safe_rmtree(img_dir)
 
         # Update video info (only needed when first episode is encoded since it reads from episode 0)
         if len(self.meta.video_keys) > 0 and episode_index == 0:
