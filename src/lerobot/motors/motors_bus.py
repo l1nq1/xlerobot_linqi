@@ -428,14 +428,59 @@ class MotorsBus(abc.ABC):
             DeviceAlreadyConnectedError: The port is already open.
             ConnectionError: The underlying SDK failed to open the port or the handshake did not succeed.
         """
+        # Import time for delays
+        import time
+        
+        # If port appears to be open (e.g., from a previous interrupted session),
+        # try to close it first to avoid connection issues
         if self.is_connected:
-            raise DeviceAlreadyConnectedError(
-                f"{self.__class__.__name__}('{self.port}') is already connected. Do not call `{self.__class__.__name__}.connect()` twice."
+            logger.warning(
+                f"{self.__class__.__name__}('{self.port}') port appears to be open. "
+                "Attempting to close it first (this may happen after an interrupted session)..."
             )
+            try:
+                self.port_handler.clearPort()
+                self.port_handler.is_using = False
+                self.port_handler.closePort()
+                # Give the port a moment to fully close
+                time.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Error closing port: {e}. Continuing with connection attempt...")
 
-        self._connect(handshake)
-        self.set_timeout()
-        logger.debug(f"{self.__class__.__name__} connected.")
+        # Retry connection up to 3 times if handshake fails (e.g., motor detection issues after interruption)
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                self._connect(handshake)
+                self.set_timeout()
+                logger.debug(f"{self.__class__.__name__} connected.")
+                return
+            except (RuntimeError, ConnectionError) as e:
+                # If this is the last attempt, raise the error
+                if attempt == max_retries - 1:
+                    raise
+                
+                # Check if error is related to motor detection (missing motors)
+                error_msg = str(e)
+                if "Missing motor" in error_msg or "motor check failed" in error_msg:
+                    logger.warning(
+                        f"Motor detection failed on attempt {attempt + 1}/{max_retries}. "
+                        f"This may happen after an interrupted session. Retrying in {retry_delay}s..."
+                    )
+                    # Close port if it was opened
+                    if self.is_connected:
+                        try:
+                            self.port_handler.clearPort()
+                            self.port_handler.is_using = False
+                            self.port_handler.closePort()
+                        except Exception:
+                            pass
+                    time.sleep(retry_delay)
+                else:
+                    # For other errors, don't retry
+                    raise
 
     def _connect(self, handshake: bool = True) -> None:
         try:

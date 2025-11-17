@@ -354,7 +354,17 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         )
 
     # Load pretrained policy
+    if cfg.policy is not None:
+        logging.info("=" * 80)
+        logging.info("Starting to load pretrained policy...")
+        logging.info(f"Policy path: {cfg.policy.pretrained_path}")
+        logging.info(f"Policy type: {cfg.policy.type if hasattr(cfg.policy, 'type') else 'unknown'}")
+        logging.info("=" * 80)
     policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    if cfg.policy is not None:
+        logging.info("=" * 80)
+        logging.info("Policy loaded successfully!")
+        logging.info("=" * 80)
 
     robot.connect()
     if teleop is not None:
@@ -362,60 +372,77 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     listener, events = init_keyboard_listener()
 
-    with VideoEncodingManager(dataset):
-        recorded_episodes = 0
-        while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-            log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
-            record_loop(
-                robot=robot,
-                events=events,
-                fps=cfg.dataset.fps,
-                teleop=teleop,
-                policy=policy,
-                dataset=dataset,
-                control_time_s=cfg.dataset.episode_time_s,
-                single_task=cfg.dataset.single_task,
-                display_data=cfg.display_data,
-            )
-
-            # Execute a few seconds without recording to give time to manually reset the environment
-            # Skip reset for the last episode to be recorded
-            if not events["stop_recording"] and (
-                (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
-            ):
-                log_say("Reset the environment", cfg.play_sounds)
+    try:
+        with VideoEncodingManager(dataset):
+            recorded_episodes = 0
+            while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
+                log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
                 record_loop(
                     robot=robot,
                     events=events,
                     fps=cfg.dataset.fps,
                     teleop=teleop,
-                    control_time_s=cfg.dataset.reset_time_s,
+                    policy=policy,
+                    dataset=dataset,
+                    control_time_s=cfg.dataset.episode_time_s,
                     single_task=cfg.dataset.single_task,
                     display_data=cfg.display_data,
                 )
 
-            if events["rerecord_episode"]:
-                log_say("Re-record episode", cfg.play_sounds)
-                events["rerecord_episode"] = False
-                events["exit_early"] = False
-                dataset.clear_episode_buffer()
-                continue
+                # Execute a few seconds without recording to give time to manually reset the environment
+                # Skip reset for the last episode to be recorded
+                if not events["stop_recording"] and (
+                    (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
+                ):
+                    log_say("Reset the environment", cfg.play_sounds)
+                    record_loop(
+                        robot=robot,
+                        events=events,
+                        fps=cfg.dataset.fps,
+                        teleop=teleop,
+                        control_time_s=cfg.dataset.reset_time_s,
+                        single_task=cfg.dataset.single_task,
+                        display_data=cfg.display_data,
+                    )
 
-            dataset.save_episode()
-            recorded_episodes += 1
+                if events["rerecord_episode"]:
+                    log_say("Re-record episode", cfg.play_sounds)
+                    events["rerecord_episode"] = False
+                    events["exit_early"] = False
+                    dataset.clear_episode_buffer()
+                    continue
 
-    log_say("Stop recording", cfg.play_sounds, blocking=True)
+                dataset.save_episode()
+                recorded_episodes += 1
 
-    # Verify dataset integrity after all episodes are recorded
-    # This was moved from save_episode() to avoid blocking during recording
-    dataset.verify_dataset_integrity()
+        log_say("Stop recording", cfg.play_sounds, blocking=True)
 
-    robot.disconnect()
-    if teleop is not None:
-        teleop.disconnect()
+        # Verify dataset integrity after all episodes are recorded
+        # This was moved from save_episode() to avoid blocking during recording
+        dataset.verify_dataset_integrity()
+    finally:
+        # Ensure cleanup even if interrupted (e.g., Ctrl+C)
+        # This prevents motor connection issues on next run
+        try:
+            if robot.is_connected:
+                logging.info("Disconnecting robot...")
+                robot.disconnect()
+        except Exception as e:
+            logging.warning(f"Error disconnecting robot: {e}")
+        
+        if teleop is not None:
+            try:
+                if teleop.is_connected:
+                    logging.info("Disconnecting teleoperator...")
+                    teleop.disconnect()
+            except Exception as e:
+                logging.warning(f"Error disconnecting teleoperator: {e}")
 
-    if not is_headless() and listener is not None:
-        listener.stop()
+        if not is_headless() and listener is not None:
+            try:
+                listener.stop()
+            except Exception as e:
+                logging.warning(f"Error stopping keyboard listener: {e}")
 
     if cfg.dataset.push_to_hub:
         dataset.push_to_hub(tags=cfg.dataset.tags, private=cfg.dataset.private)
