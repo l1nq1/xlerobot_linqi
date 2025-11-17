@@ -1,0 +1,42 @@
+# 多数据集训练配置示例
+# 使用方法: python -m lerobot.scripts.train --config multi_dataset_config.yaml
+
+dataset:
+  # 本地数据集列表
+  repo_id:
+    - pickup_circle_50episodes_single_arm_1107
+    - pickup_circle_20episodes_single_arm_1107_2
+  # 本地数据集的根目录（每个数据集应该在 root/dataset_name/ 下）
+  root: /home1/linqi/test_dataset
+  episodes: null
+  image_transforms:
+    enable: false
+  revision: null
+  use_imagenet_stats: true
+  video_backend: torchcodec
+
+policy:
+  type: smolvla
+  device: cuda
+  push_to_hub: false
+  chunk_size: 50
+  n_action_steps: 50
+  n_obs_steps: 1
+  freeze_vision_encoder: true
+  train_expert_only: true
+
+job_name: my_smolvla_training_multi_dataset
+output_dir: tests/outputs/smolvla_multi_dataset_training
+batch_size: 2
+num_workers: 4
+steps: 100000
+save_freq: 5000
+save_checkpoint: true
+log_freq: 200
+eval_freq: 20000
+
+wandb:
+  enable: false
+
+seed: 1000
+

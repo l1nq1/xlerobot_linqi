@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+from pathlib import Path
 from pprint import pformat
 
 import torch
@@ -78,17 +79,30 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     Returns:
         LeRobotDataset | MultiLeRobotDataset
     """
+    import ast
+    
     image_transforms = (
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
-    if isinstance(cfg.dataset.repo_id, str):
+    # Handle case where repo_id might be a string representation of a list (from CLI parsing)
+    repo_id = cfg.dataset.repo_id
+    if isinstance(repo_id, str) and repo_id.startswith('[') and repo_id.endswith(']'):
+        # Try to parse string representation of list
+        try:
+            repo_id = ast.literal_eval(repo_id)
+            logging.info(f"Parsed repo_id string to list: {repo_id}")
+        except (ValueError, SyntaxError):
+            logging.warning(f"Failed to parse repo_id as list, treating as single dataset: {repo_id}")
+    
+    if isinstance(repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
-            cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
+            repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
+
         dataset = LeRobotDataset(
-            cfg.dataset.repo_id,
+            repo_id,
             root=cfg.dataset.root,
             episodes=cfg.dataset.episodes,
             delta_timestamps=delta_timestamps,
@@ -97,11 +111,21 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             video_backend=cfg.dataset.video_backend,
         )
     else:
-        raise NotImplementedError("The MultiLeRobotDataset isn't supported for now.")
+        # Multiple datasets provided - use metadata from first dataset to resolve delta_timestamps
+        # This assumes all datasets have compatible FPS and features
+        first_repo_id = repo_id[0]
+        # For local datasets, each dataset is in root/repo_id/
+        first_dataset_root = Path(cfg.dataset.root) / first_repo_id if cfg.dataset.root else None
+        ds_meta = LeRobotDatasetMetadata(
+            first_repo_id, root=first_dataset_root, revision=cfg.dataset.revision
+        )
+        delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
+        
         dataset = MultiLeRobotDataset(
-            cfg.dataset.repo_id,
-            # TODO(aliberts): add proper support for multi dataset
-            # delta_timestamps=delta_timestamps,
+            repo_id,
+            root=cfg.dataset.root,
+            episodes=cfg.dataset.episodes,
+            delta_timestamps=delta_timestamps,
             image_transforms=image_transforms,
             video_backend=cfg.dataset.video_backend,
         )
