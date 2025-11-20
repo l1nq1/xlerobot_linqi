@@ -33,7 +33,25 @@ def cfg_to_group(cfg: TrainPipelineConfig, return_list: bool = False) -> list[st
         f"seed:{cfg.seed}",
     ]
     if cfg.dataset is not None:
-        lst.append(f"dataset:{cfg.dataset.repo_id}")
+        repo_id = cfg.dataset.repo_id
+        # Handle list of datasets - WandB tags must be <= 64 characters
+        if isinstance(repo_id, list):
+            if len(repo_id) == 1:
+                # Single dataset in list
+                dataset_tag = f"dataset:{repo_id[0]}"
+            else:
+                # Multiple datasets - use count to keep tag short
+                dataset_tag = f"dataset:multi_{len(repo_id)}"
+            # Truncate if still too long (max 64 chars for WandB tags)
+            if len(dataset_tag) > 64:
+                dataset_tag = dataset_tag[:61] + "..."
+        else:
+            # String type
+            dataset_tag = f"dataset:{repo_id}"
+            # Truncate if too long
+            if len(dataset_tag) > 64:
+                dataset_tag = dataset_tag[:61] + "..."
+        lst.append(dataset_tag)
     if cfg.env is not None:
         lst.append(f"env:{cfg.env.type}")
     return lst if return_list else "-".join(lst)

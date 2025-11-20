@@ -13,8 +13,11 @@
 # limitations under the License.
 import builtins
 import datetime as dt
+import json
+import logging
 import os
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import draccus
@@ -69,14 +72,62 @@ class TrainPipelineConfig(HubMixin):
 
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
+        # 强制刷新输出，确保日志立即显示
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         policy_path = parser.get_path_arg("policy")
+
 
         if policy_path:
             # Only load the policy config
+            policy_path_resolved = Path(policy_path).resolve()  
+            # 获取命令行覆盖参数
             cli_overrides = parser.get_cli_overrides("policy")
+            
+            if self.policy is not None:
+                # 将 YAML 中的 policy 配置转换为 CLI 参数格式
+                yaml_policy_overrides = []
+                try:
+                    # 使用 draccus.encode 来正确处理嵌套的 dataclass
+                    policy_dict = draccus.encode(self.policy)
+                except Exception:
+                    # 如果 draccus.encode 失败，回退到 asdict
+                    policy_dict = asdict(self.policy)
+                
+                # 排除 path 和 type 字段，因为这些是特殊字段
+                excluded_fields = {"path", "type", "pretrained_path"}
+                for key, value in policy_dict.items():
+                    if key not in excluded_fields and value is not None:
+                        # 将值转换为字符串格式，处理列表、字典等复杂类型
+                        if isinstance(value, (list, dict)):
+                            value_str = json.dumps(value)
+                        elif isinstance(value, bool):
+                            value_str = str(value).lower()
+                        else:
+                            value_str = str(value)
+                        yaml_policy_overrides.append(f"--{key}={value_str}")
+                
+                # 合并 YAML 配置和命令行参数，命令行参数优先级更高
+                # 先添加 YAML 配置，再添加 CLI 参数，这样 CLI 参数会覆盖 YAML 配置
+                all_overrides = yaml_policy_overrides + (cli_overrides or [])
+                logging.info(f"从 YAML 配置文件中读取的 policy 参数: {len(yaml_policy_overrides)} 个")
+                if yaml_policy_overrides:
+                    logging.info(f"YAML policy 参数示例: {yaml_policy_overrides[:3]}...")
+                logging.info(f"从命令行读取的 policy 覆盖参数: {len(cli_overrides or [])} 个")
+                logging.info(f"合并后的覆盖参数总数: {len(all_overrides)} 个")
+                cli_overrides = all_overrides
+            
             self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=cli_overrides)
             self.policy.pretrained_path = policy_path
+
+            if hasattr(self.policy, 'freeze_vision_encoder'):
+                logging.info(f"✓ freeze_vision_encoder = {self.policy.freeze_vision_encoder}")
+            if hasattr(self.policy, 'train_expert_only'):
+                logging.info(f"✓ train_expert_only = {self.policy.train_expert_only}")
+            logging.info("=" * 80)
         elif self.resume:
+            logging.info("检测到 resume=True，将从检查点恢复训练...")
             # The entire train config is already loaded, we just need to get the checkpoint dir
             config_path = parser.parse_arg("config_path")
             if not config_path:
@@ -91,6 +142,9 @@ class TrainPipelineConfig(HubMixin):
             policy_path = Path(config_path).parent
             self.policy.pretrained_path = policy_path
             self.checkpoint_path = policy_path.parent
+        else:
+            logging.info("未指定预训练模型路径，将从头开始训练")
+            logging.info("=" * 80)
 
         if not self.job_name:
             if self.env is None:

@@ -124,6 +124,21 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
 
         policy.to(config.device)
         policy.eval()
+        
+        # 打印关键配置参数，用于调试
+        if hasattr(config, 'freeze_vision_encoder'):
+            logging.info(f"配置参数: freeze_vision_encoder = {config.freeze_vision_encoder}")
+        if hasattr(config, 'train_expert_only'):
+            logging.info(f"配置参数: train_expert_only = {config.train_expert_only}")
+        
+        # 统计模型参数数量
+        total_params = sum(p.numel() for p in policy.parameters())
+        trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+        logging.info(f"模型参数统计:")
+        logging.info(f"  总参数数量: {total_params:,} ({total_params / 1e6:.2f}M)")
+        logging.info(f"  可训练参数: {trainable_params:,} ({trainable_params / 1e6:.2f}M)")
+        logging.info("=" * 80)
+        
         return policy
 
     @classmethod

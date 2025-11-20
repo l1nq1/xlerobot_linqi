@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import logging
+from pathlib import Path
 
 from torch import nn
 
@@ -160,14 +161,16 @@ def make_policy(
     cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
     kwargs["config"] = cfg
-
     if cfg.pretrained_path:
         # Load a pretrained policy and override the config if needed (for example, if there are inference-time
         # hyperparameters that we want to vary).
+        
         kwargs["pretrained_name_or_path"] = cfg.pretrained_path
         policy = policy_cls.from_pretrained(**kwargs)
+
     else:
         # Make a fresh policy.
+        logging.info("创建新的策略模型（未使用预训练权重）")
         policy = policy_cls(**kwargs)
 
     policy.to(cfg.device)
